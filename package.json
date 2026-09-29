@@ -1,0 +1,34 @@
+{
+  "name": "stalk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Social hub for Stonkfun — callouts, holder chat, boards, and $STALK voting",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "node --watch server/index.js",
+    "dev:client": "vite",
+    "build": "vite build",
+    "start": "node server/index.js",
+    "heroku-postbuild": "npm run build"
+  },
+  "dependencies": {
+    "@phantom/browser-sdk": "^1.0.0",
+    "bs58": "^6.0.0",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.0.0",
+    "pg": "^8.13.3",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1",
+    "tweetnacl": "^1.0.3"
+  },
+  "devDependencies": {
+    "vite": "^6.2.2"
+  }
+}

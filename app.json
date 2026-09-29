@@ -1,0 +1,29 @@
+{
+  "name": "stalk",
+  "description": "Stonkfun social hub — callouts, holder chat, boards, $STALK voting",
+  "repository": "",
+  "keywords": ["solana", "stonkfun", "phantom"],
+  "env": {
+    "SESSION_SECRET": {
+      "generator": "secret"
+    },
+    "SOLANA_RPC_URL": {
+      "description": "Solana JSON-RPC endpoint for token balance checks",
+      "value": "https://api.mainnet-beta.solana.com"
+    },
+    "STALK_MINT": {
+      "description": "$STALK mint address (required for voting)",
+      "required": false
+    },
+    "STALK_VOTE_THRESHOLD": {
+      "description": "Minimum $STALK UI amount to vote",
+      "value": "500000"
+    },
+    "VITE_PHANTOM_APP_ID": {
+      "description": "Phantom Portal app id (optional; extension works without it)",
+      "required": false
+    }
+  },
+  "addons": ["heroku-postgresql:essential-0"],
+  "buildpacks": [{ "url": "heroku/nodejs" }]
+}
