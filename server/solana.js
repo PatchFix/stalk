@@ -1,8 +1,5 @@
 import bs58 from 'bs58';
 
-const TOKEN_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
-const TOKEN_2022_PROGRAM_ID = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
-
 export function isValidPubkey(value) {
   try {
     const bytes = bs58.decode(String(value));
@@ -33,32 +30,26 @@ async function rpc(method, params) {
   return body.result;
 }
 
-async function balanceForProgram(owner, mint, programId) {
+/**
+ * Balance of `mint` for `owner`.
+ * getTokenAccountsByOwner accepts either `{ mint }` or `{ programId }`, never both.
+ * A mint filter resolves the owning program (SPL Token or Token-2022) from the mint account.
+ */
+export async function getTokenBalanceUi(walletAddress, mintAddress) {
   const result = await rpc('getTokenAccountsByOwner', [
-    owner,
-    { mint, programId },
+    walletAddress,
+    { mint: mintAddress },
     { encoding: 'jsonParsed' },
   ]);
   let total = 0;
   let decimals = 0;
   for (const item of result?.value || []) {
-    const amount = item.account.data.parsed.info.tokenAmount;
+    const amount = item.account?.data?.parsed?.info?.tokenAmount;
+    if (!amount) continue;
     total += Number(amount.uiAmount || 0);
     decimals = amount.decimals;
   }
   return { uiAmount: total, decimals };
-}
-
-/** Sum SPL + Token-2022 balances for a mint (Stonkfun uses Token-2022). */
-export async function getTokenBalanceUi(walletAddress, mintAddress) {
-  const [classic, t22] = await Promise.all([
-    balanceForProgram(walletAddress, mintAddress, TOKEN_PROGRAM_ID),
-    balanceForProgram(walletAddress, mintAddress, TOKEN_2022_PROGRAM_ID),
-  ]);
-  return {
-    uiAmount: classic.uiAmount + t22.uiAmount,
-    decimals: t22.decimals || classic.decimals,
-  };
 }
 
 export async function holdsToken(walletAddress, mintAddress, minUi = 0) {
