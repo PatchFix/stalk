@@ -8,6 +8,7 @@ import {
   setSessionCookie,
 } from '../auth.js';
 import { isValidPubkey, getStalkBalance } from '../solana.js';
+import { getUser, setNickname } from '../db.js';
 
 export const authRouter = Router();
 
@@ -32,8 +33,8 @@ authRouter.post('/verify', async (req, res, next) => {
     }
     const result = await authenticateWallet({ wallet, signature, message });
     setSessionCookie(res, result.wallet);
-    const stalk = await getStalkBalance(result.wallet);
-    res.json({ data: { wallet: result.wallet, stalk } });
+    const [stalk, user] = await Promise.all([getStalkBalance(result.wallet), getUser(result.wallet)]);
+    res.json({ data: { wallet: result.wallet, nickname: user.nickname, stalk } });
   } catch (err) {
     next(err);
   }
@@ -45,8 +46,17 @@ authRouter.get('/me', async (req, res, next) => {
     if (!wallet) {
       return res.json({ data: { wallet: null } });
     }
-    const stalk = await getStalkBalance(wallet);
-    res.json({ data: { wallet, stalk } });
+    const [stalk, user] = await Promise.all([getStalkBalance(wallet), getUser(wallet)]);
+    res.json({ data: { wallet, nickname: user.nickname, stalk } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+authRouter.post('/nickname', requireAuth, async (req, res, next) => {
+  try {
+    const user = await setNickname(req.wallet, req.body?.nickname);
+    res.json({ data: { wallet: user.wallet, nickname: user.nickname } });
   } catch (err) {
     next(err);
   }

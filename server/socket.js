@@ -1,11 +1,12 @@
 import { Server } from 'socket.io';
-import { createChatMessage, listChat } from './db.js';
+import { createChatMessage, listChat, withNicknames } from './db.js';
 import { getWalletFromCookieHeader } from './auth.js';
+import { assertChatCooldown } from './limits.js';
 import { getTokenBalanceUi, isValidPubkey } from './solana.js';
 
 const ROOM = (mint) => `chat:${mint}`;
 
-/** @type {WeakMap<object, { lastSend: number, mint: string | null }>} */
+/** @type {WeakMap<object, { mint: string | null }>} */
 const socketMeta = new WeakMap();
 
 export function attachChatSocket(httpServer) {
@@ -23,7 +24,7 @@ export function attachChatSocket(httpServer) {
       return next(new Error('unauthorized'));
     }
     socket.data.wallet = wallet;
-    socketMeta.set(socket, { lastSend: 0, mint: null });
+    socketMeta.set(socket, { mint: null });
     next();
   });
 
@@ -45,9 +46,9 @@ export function attachChatSocket(httpServer) {
           socket.leave(ROOM(prev.mint));
         }
         socket.join(ROOM(mint));
-        socketMeta.set(socket, { lastSend: prev?.lastSend || 0, mint });
+        socketMeta.set(socket, { mint });
 
-        const messages = await listChat(mint);
+        const messages = await withNicknames(await listChat(mint));
         ack?.({ ok: true, messages, balance: uiAmount });
       } catch (err) {
         console.error('chat:join', err);
@@ -78,24 +79,21 @@ export function attachChatSocket(httpServer) {
           return ack?.({ ok: false, error: 'Message must be 1–500 characters' });
         }
 
-        const now = Date.now();
-        if (meta && now - meta.lastSend < 400) {
-          return ack?.({ ok: false, error: 'Slow down' });
-        }
-
         const { uiAmount } = await getTokenBalanceUi(socket.data.wallet, mint);
         if (uiAmount <= 0) {
           socket.leave(ROOM(mint));
           return ack?.({ ok: false, error: 'Holder chat is for token holders only' });
         }
 
-        const message = await createChatMessage({
-          mint,
-          wallet: socket.data.wallet,
-          body,
-        });
+        await assertChatCooldown(socket.data.wallet);
 
-        if (meta) socketMeta.set(socket, { ...meta, lastSend: now });
+        const [message] = await withNicknames([
+          await createChatMessage({
+            mint,
+            wallet: socket.data.wallet,
+            body,
+          }),
+        ]);
 
         io.to(ROOM(mint)).emit('chat:message', message);
         ack?.({ ok: true, message });

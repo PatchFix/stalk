@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { requireAuth } from '../auth.js';
-import { createCallout, listCallouts } from '../db.js';
+import { createCallout, listCallouts, withNicknames } from '../db.js';
+import { assertOneCallout } from '../limits.js';
 import { extractMarketSnapshot, getToken } from '../stonkfun.js';
 import { getTokenBalanceUi, isValidPubkey } from '../solana.js';
 
@@ -13,7 +14,9 @@ calloutsRouter.get('/', async (req, res, next) => {
     if (mint && !isValidPubkey(mint)) {
       return res.status(400).json({ error: { code: 'invalid_request', message: 'Invalid mint' } });
     }
-    const callouts = await listCallouts({ mint, wallet, limit: Number(req.query.limit) || 50 });
+    const callouts = await withNicknames(
+      await listCallouts({ mint, wallet, limit: Number(req.query.limit) || 50 }),
+    );
 
     // Enrich with live performance vs callout snapshot
     const enriched = await Promise.all(
@@ -69,16 +72,19 @@ calloutsRouter.post('/', requireAuth, async (req, res, next) => {
       });
     }
 
+    await assertOneCallout(mint, req.wallet);
     const token = await getToken(mint);
     const snap = extractMarketSnapshot(token);
-    const callout = await createCallout({
-      mint,
-      wallet: req.wallet,
-      thesis,
-      priceAtCall: snap.priceUsd,
-      mcapAtCall: snap.marketCapUsd,
-      holderBalance: uiAmount,
-    });
+    const [callout] = await withNicknames([
+      await createCallout({
+        mint,
+        wallet: req.wallet,
+        thesis,
+        priceAtCall: snap.priceUsd,
+        mcapAtCall: snap.marketCapUsd,
+        holderBalance: uiAmount,
+      }),
+    ]);
 
     res.status(201).json({
       data: {

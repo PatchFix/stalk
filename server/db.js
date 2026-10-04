@@ -58,6 +58,7 @@ export async function initDb() {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS board_posts_mint_idx ON board_posts (mint, created_at DESC);
+      CREATE INDEX IF NOT EXISTS board_posts_wallet_idx ON board_posts (wallet, created_at DESC);
       CREATE TABLE IF NOT EXISTS callouts (
         id UUID PRIMARY KEY,
         mint TEXT NOT NULL,
@@ -70,6 +71,7 @@ export async function initDb() {
       );
       CREATE INDEX IF NOT EXISTS callouts_mint_idx ON callouts (mint, created_at DESC);
       CREATE INDEX IF NOT EXISTS callouts_wallet_idx ON callouts (wallet, created_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS callouts_wallet_mint_uidx ON callouts (wallet, mint);
       CREATE TABLE IF NOT EXISTS chat_messages (
         id UUID PRIMARY KEY,
         mint TEXT NOT NULL,
@@ -78,6 +80,7 @@ export async function initDb() {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS chat_mint_idx ON chat_messages (mint, created_at DESC);
+      CREATE INDEX IF NOT EXISTS chat_wallet_idx ON chat_messages (wallet, created_at DESC);
       CREATE TABLE IF NOT EXISTS votes (
         id UUID PRIMARY KEY,
         mint TEXT NOT NULL,
@@ -88,6 +91,8 @@ export async function initDb() {
         UNIQUE (mint, wallet)
       );
       CREATE INDEX IF NOT EXISTS votes_mint_idx ON votes (mint);
+      CREATE UNIQUE INDEX IF NOT EXISTS users_display_name_lower_idx
+        ON users (lower(display_name));
     `);
     console.log('DB: Postgres ready');
     return;
@@ -118,9 +123,101 @@ export async function upsertUser(wallet) {
   }
   const s = requireStore();
   if (!s.data.users[wallet]) {
-    s.data.users[wallet] = { wallet, createdAt: new Date().toISOString() };
+    s.data.users[wallet] = { wallet, displayName: null, createdAt: new Date().toISOString() };
     await s.save();
   }
+}
+
+const NICKNAME_RE = /^[A-Za-z][A-Za-z0-9_]{2,15}$/;
+
+export function parseNickname(raw) {
+  if (raw == null || String(raw).trim() === '') return null;
+  const nickname = String(raw).trim();
+  if (!NICKNAME_RE.test(nickname)) {
+    const err = new Error(
+      'Nickname must be 3–16 characters, start with a letter, and use only letters, numbers, or underscores',
+    );
+    err.status = 400;
+    err.code = 'invalid_request';
+    throw err;
+  }
+  return nickname;
+}
+
+function takenError() {
+  const err = new Error('That nickname is taken');
+  err.status = 409;
+  err.code = 'nickname_taken';
+  return err;
+}
+
+export async function getUser(wallet) {
+  if (pool) {
+    const { rows } = await pool.query(
+      `SELECT wallet, display_name AS nickname, created_at AS "createdAt"
+       FROM users WHERE wallet = $1`,
+      [wallet],
+    );
+    return rows[0] || { wallet, nickname: null };
+  }
+  const user = requireStore().data.users[wallet];
+  return {
+    wallet,
+    nickname: user?.displayName || null,
+    createdAt: user?.createdAt || null,
+  };
+}
+
+export async function setNickname(wallet, raw) {
+  const nickname = parseNickname(raw);
+  if (pool) {
+    try {
+      const { rows } = await pool.query(
+        `INSERT INTO users (wallet, display_name) VALUES ($1, $2)
+         ON CONFLICT (wallet) DO UPDATE SET display_name = EXCLUDED.display_name
+         RETURNING wallet, display_name AS nickname`,
+        [wallet, nickname],
+      );
+      return rows[0];
+    } catch (err) {
+      if (err.code === '23505') throw takenError();
+      throw err;
+    }
+  }
+  const s = requireStore();
+  if (nickname) {
+    const clash = Object.values(s.data.users).find(
+      (user) =>
+        user.wallet !== wallet &&
+        user.displayName &&
+        user.displayName.toLowerCase() === nickname.toLowerCase(),
+    );
+    if (clash) throw takenError();
+  }
+  if (!s.data.users[wallet]) {
+    s.data.users[wallet] = { wallet, createdAt: new Date().toISOString() };
+  }
+  s.data.users[wallet].displayName = nickname;
+  await s.save();
+  return { wallet, nickname };
+}
+
+export async function withNicknames(rows) {
+  const wallets = [...new Set(rows.map((row) => row.wallet).filter(Boolean))];
+  const names = new Map();
+  if (wallets.length) {
+    if (pool) {
+      const { rows: found } = await pool.query(
+        `SELECT wallet, display_name AS nickname FROM users WHERE wallet = ANY($1::text[])`,
+        [wallets],
+      );
+      for (const row of found) names.set(row.wallet, row.nickname || null);
+    } else {
+      const users = requireStore().data.users;
+      for (const wallet of wallets) names.set(wallet, users[wallet]?.displayName || null);
+    }
+  }
+  return rows.map((row) => ({ ...row, nickname: names.get(row.wallet) || null }));
 }
 
 export async function setNonce(wallet, nonce, expiresAt) {
@@ -231,7 +328,59 @@ function normalizeCallout(row) {
   };
 }
 
+function calloutExistsError() {
+  const err = new Error('You already called this token');
+  err.status = 409;
+  err.code = 'callout_exists';
+  return err;
+}
+
+export async function findCallout(mint, wallet) {
+  if (pool) {
+    const { rows } = await pool.query(
+      `SELECT id FROM callouts WHERE mint = $1 AND wallet = $2 LIMIT 1`,
+      [mint, wallet],
+    );
+    return rows[0] || null;
+  }
+  return (
+    requireStore().data.callouts.find((callout) => callout.mint === mint && callout.wallet === wallet) ||
+    null
+  );
+}
+
+function latestCreatedAt(rowsForWallet) {
+  if (!rowsForWallet.length) return null;
+  return rowsForWallet.reduce(
+    (latest, row) => (row.createdAt > latest ? row.createdAt : latest),
+    rowsForWallet[0].createdAt,
+  );
+}
+
+export async function latestBoardPostAt(wallet) {
+  if (pool) {
+    const { rows } = await pool.query(
+      `SELECT created_at AS "createdAt" FROM board_posts WHERE wallet = $1 ORDER BY created_at DESC LIMIT 1`,
+      [wallet],
+    );
+    return rows[0]?.createdAt || null;
+  }
+  return latestCreatedAt(requireStore().data.boardPosts.filter((post) => post.wallet === wallet));
+}
+
+export async function latestChatAt(wallet) {
+  if (pool) {
+    const { rows } = await pool.query(
+      `SELECT created_at AS "createdAt" FROM chat_messages WHERE wallet = $1 ORDER BY created_at DESC LIMIT 1`,
+      [wallet],
+    );
+    return rows[0]?.createdAt || null;
+  }
+  return latestCreatedAt(requireStore().data.chatMessages.filter((message) => message.wallet === wallet));
+}
+
 export async function createCallout(payload) {
+  if (await findCallout(payload.mint, payload.wallet)) throw calloutExistsError();
   const row = {
     id: randomUUID(),
     mint: payload.mint,
@@ -243,20 +392,25 @@ export async function createCallout(payload) {
     createdAt: new Date().toISOString(),
   };
   if (pool) {
-    await pool.query(
-      `INSERT INTO callouts (id, mint, wallet, thesis, price_at_call, mcap_at_call, holder_balance, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [
-        row.id,
-        row.mint,
-        row.wallet,
-        row.thesis,
-        row.priceAtCall,
-        row.mcapAtCall,
-        row.holderBalance,
-        row.createdAt,
-      ],
-    );
+    try {
+      await pool.query(
+        `INSERT INTO callouts (id, mint, wallet, thesis, price_at_call, mcap_at_call, holder_balance, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [
+          row.id,
+          row.mint,
+          row.wallet,
+          row.thesis,
+          row.priceAtCall,
+          row.mcapAtCall,
+          row.holderBalance,
+          row.createdAt,
+        ],
+      );
+    } catch (err) {
+      if (err.code === '23505') throw calloutExistsError();
+      throw err;
+    }
     return row;
   }
   const s = requireStore();

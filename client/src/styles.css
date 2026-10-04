@@ -171,6 +171,39 @@ textarea:focus {
   border-color: rgba(182, 255, 59, 0.35);
 }
 
+button.nick-pill {
+  background: transparent;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+  padding: 0.35rem 0.55rem;
+}
+
+button.nick-pill:hover:not(:disabled) {
+  background: rgba(182, 255, 59, 0.08);
+  box-shadow: none;
+  transform: none;
+}
+
+.nick-form {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.nick-form input {
+  width: 9rem;
+  padding: 0.35rem 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.nick-form button {
+  padding: 0.35rem 0.6rem;
+  font-size: 0.7rem;
+}
+
 .hero {
   min-height: calc(100vh - 6rem);
   display: grid;

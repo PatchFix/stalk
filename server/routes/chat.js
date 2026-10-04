@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { requireAuth } from '../auth.js';
-import { createChatMessage, listChat } from '../db.js';
+import { createChatMessage, listChat, withNicknames } from '../db.js';
+import { assertChatCooldown } from '../limits.js';
 import { getTokenBalanceUi, isValidPubkey } from '../solana.js';
 
 export const chatRouter = Router();
@@ -17,7 +18,7 @@ chatRouter.get('/:mint', requireAuth, async (req, res, next) => {
         error: { code: 'forbidden', message: 'Holder chat is for token holders only' },
       });
     }
-    const messages = await listChat(mint);
+    const messages = await withNicknames(await listChat(mint));
     res.json({ data: { messages, balance: uiAmount } });
   } catch (err) {
     next(err);
@@ -42,7 +43,8 @@ chatRouter.post('/:mint', requireAuth, async (req, res, next) => {
         error: { code: 'forbidden', message: 'Holder chat is for token holders only' },
       });
     }
-    const message = await createChatMessage({ mint, wallet: req.wallet, body });
+    await assertChatCooldown(req.wallet);
+    const [message] = await withNicknames([await createChatMessage({ mint, wallet: req.wallet, body })]);
     res.status(201).json({ data: { message } });
   } catch (err) {
     next(err);

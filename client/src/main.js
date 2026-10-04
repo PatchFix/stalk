@@ -11,7 +11,7 @@ import {
 } from './wallet.js';
 
 const app = document.getElementById('app');
-let session = { wallet: null, stalk: null };
+let session = { wallet: null, nickname: null, stalk: null };
 let toastTimer;
 let activeChatMint = null;
 
@@ -73,9 +73,44 @@ async function refreshSession() {
   try {
     session = await api('/api/auth/me');
   } catch {
-    session = { wallet: null, stalk: null };
+    session = { wallet: null, nickname: null, stalk: null };
   }
   renderWalletBox();
+}
+
+function openNickForm() {
+  const pill = document.getElementById('btn-nick');
+  if (!pill) return;
+  const form = document.createElement('form');
+  form.className = 'nick-form';
+  form.innerHTML = `
+    <input name="nickname" maxlength="16" placeholder="nickname" value="${escapeAttr(session.nickname || '')}" autocomplete="off" spellcheck="false" />
+    <button type="submit">Save</button>
+    <button class="ghost" type="button" id="nick-cancel">Cancel</button>
+  `;
+  pill.replaceWith(form);
+  form.nickname.focus();
+  form.nickname.select();
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const nickname = new FormData(form).get('nickname');
+    try {
+      const data = await api('/api/auth/nickname', {
+        method: 'POST',
+        body: JSON.stringify({ nickname }),
+      });
+      session.nickname = data.nickname;
+      toast(data.nickname ? `Nickname set to ${data.nickname}` : 'Nickname cleared');
+      route();
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+  form.querySelector('#nick-cancel')?.addEventListener('click', () => renderWalletBox());
+}
+
+function whoName(person) {
+  return person?.nickname || shortAddr(person?.wallet);
 }
 
 function renderWalletBox() {
@@ -86,11 +121,16 @@ function renderWalletBox() {
       session.stalk?.configured === false
         ? `<span class="pill">$STALK mint TBD</span>`
         : `<span class="pill live">${Number(session.stalk?.balance || 0).toLocaleString()} $STALK</span>`;
+    const nameControl = session.nickname
+      ? `<button class="pill nick-pill" type="button" id="btn-nick" title="${escapeAttr(session.wallet)}">${escapeHtml(session.nickname)}</button>`
+      : `<span class="pill" title="${escapeAttr(session.wallet)}">${escapeHtml(shortAddr(session.wallet))}</span>
+         <button class="ghost" type="button" id="btn-nick">Set nickname</button>`;
     box.innerHTML = `
       ${stalkBit}
-      <span class="pill">${shortAddr(session.wallet)}</span>
+      ${nameControl}
       <button class="ghost" type="button" id="btn-logout">Disconnect</button>
     `;
+    box.querySelector('#btn-nick')?.addEventListener('click', () => openNickForm());
     box.querySelector('#btn-logout')?.addEventListener('click', async () => {
       leaveActiveChat();
       disconnectChatSocket();
@@ -100,7 +140,7 @@ function renderWalletBox() {
         /* ignore */
       }
       await disconnectWallet();
-      session = { wallet: null, stalk: null };
+      session = { wallet: null, nickname: null, stalk: null };
       toast('Disconnected');
       route();
     });
@@ -121,7 +161,7 @@ async function doConnect() {
       method: 'POST',
       body: JSON.stringify({ wallet: address, signature, message }),
     });
-    toast(`Signed in as ${shortAddr(address)}`);
+    toast(`Signed in as ${session.nickname || shortAddr(address)}`);
     route();
   } catch (err) {
     console.error(err);
@@ -253,7 +293,7 @@ async function renderCalloutsFeed() {
           <article class="feed-item">
             <div class="who">
               <a href="#/token/${c.mint}">$${escapeHtml(sym)}</a>
-              · ${shortAddr(c.wallet)}
+              · ${escapeHtml(whoName(c))}
               <span class="when">${timeAgo(c.createdAt)}</span>
               <span class="${cls}" style="margin-left:0.6rem">${formatPct(pct)}</span>
             </div>
@@ -316,7 +356,7 @@ async function mountBoard(mint) {
   const panel = document.getElementById('board-panel');
   panel.innerHTML = `
     <h3>Board</h3>
-    <p class="hint">Open discussion — anyone signed in can post.</p>
+    <p class="hint">Open discussion — anyone signed in can post. 30 seconds between posts.</p>
     <div class="feed" id="board-feed"></div>
     <form class="composer" id="board-form">
       <textarea name="body" rows="3" placeholder="Say something about this token…" ${session.wallet ? '' : 'disabled'}></textarea>
@@ -331,7 +371,7 @@ async function mountBoard(mint) {
           .map(
             (p) => `
         <article class="feed-item">
-          <div class="who">${shortAddr(p.wallet)}<span class="when">${timeAgo(p.createdAt)}</span></div>
+          <div class="who" title="${escapeAttr(p.wallet)}">${escapeHtml(whoName(p))}<span class="when">${timeAgo(p.createdAt)}</span></div>
           <div class="body">${escapeHtml(p.body)}</div>
         </article>`,
           )
@@ -357,7 +397,7 @@ async function mountCallouts(mint, detail) {
   const canCall = session.wallet && detail.holdings?.balance > 0;
   panel.innerHTML = `
     <h3>Callouts</h3>
-    <p class="hint">Must hold the token. We snapshot price &amp; mcap when you call.</p>
+    <p class="hint">One call per wallet on this token. Must hold it — price and mcap are snapshotted when you call.</p>
     <div class="feed" id="callout-feed"></div>
     <form class="composer" id="callout-form">
       <textarea name="thesis" rows="3" placeholder="Your call — thesis in one take…" ${canCall ? '' : 'disabled'}></textarea>
@@ -366,6 +406,14 @@ async function mountCallouts(mint, detail) {
   `;
   const refresh = async () => {
     const { callouts } = await api(`/api/callouts?mint=${mint}`);
+    const alreadyCalled = session.wallet && callouts?.some((c) => c.wallet === session.wallet);
+    const textarea = panel.querySelector('textarea');
+    const button = panel.querySelector('button[type="submit"]');
+    if (alreadyCalled && textarea && button) {
+      textarea.disabled = true;
+      button.disabled = true;
+      button.textContent = 'Already called';
+    }
     const feed = document.getElementById('callout-feed');
     feed.innerHTML = callouts?.length
       ? callouts
@@ -374,7 +422,7 @@ async function mountCallouts(mint, detail) {
             const cls = pct > 0 ? 'perf-up' : pct < 0 ? 'perf-down' : '';
             return `
           <article class="feed-item">
-            <div class="who">${shortAddr(c.wallet)}<span class="when">${timeAgo(c.createdAt)}</span>
+            <div class="who" title="${escapeAttr(c.wallet)}">${escapeHtml(whoName(c))}<span class="when">${timeAgo(c.createdAt)}</span>
               <span class="${cls}" style="margin-left:0.6rem">${formatPct(pct)}</span>
             </div>
             <div class="body">${escapeHtml(c.thesis)}</div>
@@ -461,7 +509,7 @@ function renderChatMessages(messages) {
         .map(
           (m) => `
       <article class="feed-item" data-id="${escapeAttr(m.id)}">
-        <div class="who">${shortAddr(m.wallet)}<span class="when">${timeAgo(m.createdAt)}</span></div>
+        <div class="who" title="${escapeAttr(m.wallet)}">${escapeHtml(whoName(m))}<span class="when">${timeAgo(m.createdAt)}</span></div>
         <div class="body">${escapeHtml(m.body)}</div>
       </article>`,
         )
@@ -480,7 +528,7 @@ function appendChatMessage(message) {
   article.className = 'feed-item';
   article.dataset.id = message.id;
   article.innerHTML = `
-    <div class="who">${shortAddr(message.wallet)}<span class="when">${timeAgo(message.createdAt)}</span></div>
+    <div class="who" title="${escapeAttr(message.wallet)}">${escapeHtml(whoName(message))}<span class="when">${timeAgo(message.createdAt)}</span></div>
     <div class="body">${escapeHtml(message.body)}</div>`;
   feed.appendChild(article);
   feed.scrollTop = feed.scrollHeight;
@@ -491,7 +539,7 @@ async function mountChat(mint, detail) {
   const isHolder = detail.holdings?.balance > 0;
   panel.innerHTML = `
     <h3>Holder chat</h3>
-    <p class="hint">Live · gated to wallets holding this mint.</p>
+    <p class="hint">Live · holders only · 10 seconds between messages.</p>
     <div class="feed" id="chat-feed"><p class="empty">Connecting…</p></div>
     <form class="composer" id="chat-form">
       <textarea name="body" rows="2" placeholder="Holder-only channel…" ${isHolder ? '' : 'disabled'}></textarea>
@@ -585,7 +633,7 @@ function escapeAttr(str) {
 onWalletEvents({
   connect: () => refreshSession(),
   disconnect: () => {
-    session = { wallet: null, stalk: null };
+    session = { wallet: null, nickname: null, stalk: null };
     renderWalletBox();
   },
 });
